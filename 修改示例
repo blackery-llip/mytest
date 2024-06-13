@@ -1,0 +1,138 @@
+解释以下代码
+ChatGPT
+当然，请提供你想要我解释的代码片段。我会尽力帮助你理解它。
+
+set -e
+
+build_common() {
+    local current_dir=`pwd`
+    local bash_src_dir=$(realpath $(dirname ${BASH_SOURCE[0]}))
+    local build_type=$1
+    local cmake_options=""
+    shift
+    if [[ ${build_type} == "agl" ]]; then
+        cmake_options="${cmake_options} -DCMAKE_TOOLCHAIN_FILE=${bash_src_dir}/toolchain/agl_toolchain.cmake"
+    fi
+
+    mkdir -p ${TROUT_SRC_ROOT:-${bash_src_dir}}/out/${build_type}_build && cd $_
+    cmake -G Ninja ${cmake_options} ../..
+    ninja $@
+    cd ${current_dir}
+}
+
+build_host_tools() {
+    build_common host $@
+}
+
+build_agl_service() {
+    build_common agl $@
+}
+
+if [[ ! $(which aprotoc) && ! $(which protoc-gen-grpc-cpp-plugin) ]]; then
+    build_host_tools protoc grpc_cpp_plugin
+fi
+
+build_agl_service android_audio_controller
+build_agl_service android_audio_controller_test
+build_agl_service dumpstate_grpc_server
+build_agl_service dumpstate_tests
+build_agl_service garage_mode_helper
+build_agl_service vehicle_hal_grpc_server
+build_agl_service watchdog_test_service
+
+ChatGPT
+这段代码是一个 shell 脚本，主要用于构建软件项目。让我们逐步解释它：
+
+set -e：
+
+这一行表示在脚本中如果任何命令的退出状态非零（即失败），则立即停止执行整个脚本。
+build_common() 函数：
+
+这个函数用于构建通用的部分。它接受一个参数 build_type，然后根据不同的 build_type 设置不同的 cmake_options。
+首先，获取当前目录并保存在 current_dir 变量中。
+使用 realpath $(dirname ${BASH_SOURCE[0]}) 获取当前脚本所在的目录，并保存在 bash_src_dir 变量中。
+shift 命令移除 $1，即 build_type 参数，剩下的是 cmake 的参数。
+如果 build_type 是 "agl"，则设置 cmake_options，包括指定一个特定的 toolchain 文件。
+接着创建一个目录 ${TROUT_SRC_ROOT:-${bash_src_dir}}/out/${build_type}_build，如果目录不存在的话，并且进入该目录。
+使用 cmake 命令生成 Ninja 构建系统的构建文件，传入之前设置的 cmake_options。
+使用 Ninja 进行实际的构建，传入 $@ 参数。
+最后返回到之前保存的 current_dir。
+build_host_tools() 和 build_agl_service() 函数：
+
+这两个函数分别调用 build_common 函数来构建不同的部分。
+build_host_tools() 用于构建主机工具，传入 "host" 作为 build_type。
+build_agl_service() 用于构建 AGL 服务，传入 "agl" 作为 build_type。
+条件检查和构建：
+
+这段代码最后是一些条件检查和多次调用 build_agl_service() 的实例。
+首先检查系统中是否已安装了 aprotoc 和 protoc-gen-grpc-cpp-plugin，如果没有安装，则调用 build_host_tools 函数来构建这些工具（protoc 和 grpc_cpp_plugin）。
+然后依次调用 build_agl_service() 函数来构建多个 AGL 服务，包括 android_audio_controller、android_audio_controller_test 等等。
+总结：
+这段脚本主要用于构建软件项目，它使用了 shell 函数来组织构建过程，并通过条件检查确定是否需要构建特定的工具。整体流程包括设置构建参数、创建目录、调用 cmake 和 Ninja 进行构建。
+
+ninja $@
+ChatGPT
+在给定的代码片段中，ninja $@ 是一个命令，用于执行构建操作。让我们详细解释一下：
+
+在Shell脚本中，$@ 是一个特殊的变量，它表示传递给脚本的所有参数。当在命令中使用 $@ 时，它会展开成所有传递给当前函数或脚本的参数列表。
+
+在这段代码中，ninja $@ 是在调用了 cmake 生成构建系统文件后执行的一个命令。具体来说：
+
+cmake -G Ninja ${cmake_options} ../.. 这一行使用 cmake 命令生成了 Ninja 构建系统所需的文件。
+
+ninja $@ 这一行是实际执行构建的命令。$@ 会展开为调用 build_common 函数时传递的所有参数，这些参数可能包括构建目标或其他构建选项。
+
+因此，ninja $@ 的作用是根据传递给脚本的参数列表执行相应的构建操作。具体执行的命令由 cmake 生成的 Ninja 构建文件定义，通常是编译源代码、链接目标文件等构建步骤。
+
+可以不适用ninja而使用make吗
+ChatGPT
+是的，可以根据需要替换 ninja 命令为 make 命令。这两者都是常见的构建工具，但有些项目可能更倾向于使用其中的一种。
+
+在你的原始代码中，如果想要使用 make 而不是 ninja，你可以做如下修改：
+
+将 ninja $@ 替换为 make $@。
+修改后的代码片段如下所示：
+
+bash
+复制代码
+set -e
+
+build_common() {
+    local current_dir=`pwd`
+    local bash_src_dir=$(realpath $(dirname ${BASH_SOURCE[0]}))
+    local build_type=$1
+    local cmake_options=""
+    shift
+    if [[ ${build_type} == "agl" ]]; then
+        cmake_options="${cmake_options} -DCMAKE_TOOLCHAIN_FILE=${bash_src_dir}/toolchain/agl_toolchain.cmake"
+    fi
+
+    mkdir -p ${TROUT_SRC_ROOT:-${bash_src_dir}}/out/${build_type}_build && cd $_
+    cmake -G "Unix Makefiles" ${cmake_options} ../..
+    make $@
+    cd ${current_dir}
+}
+
+build_host_tools() {
+    build_common host $@
+}
+
+build_agl_service() {
+    build_common agl $@
+}
+
+if [[ ! $(which aprotoc) && ! $(which protoc-gen-grpc-cpp-plugin) ]]; then
+    build_host_tools protoc grpc_cpp_plugin
+fi
+
+build_agl_service android_audio_controller
+build_agl_service android_audio_controller_test
+build_agl_service dumpstate_grpc_server
+build_agl_service dumpstate_tests
+build_agl_service garage_mode_helper
+build_agl_service vehicle_hal_grpc_server
+build_agl_service watchdog_test_service
+主要修改的部分包括：
+cmake 命令中的 -G 参数被修改为 "Unix Makefiles"，这样会生成适合 make 命令的 Makefile。
+ninja $@ 替换为 make $@，以使用 make 来执行实际的构建操作。
+这样修改后，脚本会使用 make 来代替 ninja 进行构建。请确保你的系统上已经安装了 make 工具，因为在大多数Unix和Linux系统中，make 是默认安装的，但可能需要根据具体系统进行安装或配置。
