@@ -160,6 +160,31 @@ SET(CMAKE_SYSROOT /path/to/sysroot)
 CMAKE_SYSROOT 是一个重要的 CMake 变量，在交叉编译项目中特别重要。它确保了编译器和链接器能够正确地访问和使用目标平台的系统文件，以便生成能够在目标平台上正确运行的二进制文件。
 
 
+CMAKE_C_COMPILER和CMAKE_C_COMPILER_TARGET的区别
+ChatGPT
+在 CMake 中，CMAKE_C_COMPILER 和 CMAKE_C_COMPILER_TARGET 这两个变量是用于指定 C 编译器及其目标平台的关键变量，它们有以下区别：
 
+CMAKE_C_COMPILER：
+
+CMAKE_C_COMPILER 用于指定 C 编译器的路径。
+例如，你可以通过以下方式指定编译器的路径：
+cmake
+复制代码
+SET(CMAKE_C_COMPILER /path/to/cross/compiler/bin/arm-linux-gnueabihf-gcc)
+这个变量告诉 CMake 在编译项目时使用指定路径下的 C 编译器来处理 C 源文件。
+CMAKE_C_COMPILER_TARGET：
+
+CMAKE_C_COMPILER_TARGET 用于指定 C 编译器的目标平台。
+例如，你可以通过以下方式指定目标平台：
+cmake
+复制代码
+SET(CMAKE_C_COMPILER_TARGET arm-linux-gnueabihf)
+这个变量告诉 CMake 编译器为特定的目标平台生成代码。它会影响编译器的默认设置，例如使用正确的系统头文件和库文件路径。
+关系和使用场景：
+关系：
+CMAKE_C_COMPILER 和 CMAKE_C_COMPILER_TARGET 通常会一起使用。CMAKE_C_COMPILER 指定了编译器的实际可执行文件路径，而 CMAKE_C_COMPILER_TARGET 则指定了编译器应该为哪个平台生成代码。
+使用场景：
+在交叉编译环境中，这两个变量非常重要。通过正确设置 CMAKE_C_COMPILER 和 CMAKE_C_COMPILER_TARGET，你可以确保 CMake 在交叉编译时能够正确地调用并配置编译器，以生成适合目标平台的二进制代码。
+总结来说，CMAKE_C_COMPILER 是指定 C 编译器可执行文件的路径，而 CMAKE_C_COMPILER_TARGET 则是指定编译器应该为哪个目标平台生成代码的变量。这两者合起来确保了交叉编译环境下编译器的正确配置和使用。
 
 
