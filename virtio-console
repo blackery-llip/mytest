@@ -1,0 +1,205 @@
+service：
+[Unit]
+Description=Console input fifo create
+
+[Service]
+Type=simple
+Restart=always
+
+ExecStartPre=mkdir -p /tmp/vhost-user
+ExecStart=/usr/bin/virtio-console-test vconsole0 vconsole1
+
+[Install]
+WantedBy=multi-user.target
+
+
+code
+
+struct member {
+	int fd;
+	char path[128];
+};
+
+//mkfifo one is in，another is out
+int prepare_two_pipe_for_crosvm(char *path) {
+	char out_path[128];
+	char in_path[128];
+	sprintf(out_path, "/tmp/vhost-user/%s.out", path);
+	sprintf(in_path, "/tmp/vhost-user/%s.in", path);
+	if (access(out_path, F_OK)) {
+		if (mkfifo(out_path, 0644)) {
+			fprintf(stderr, "[%s:%d]Could not create %s\n", __func__, __LINE__,
+							out_path);
+			exit(EXIT_FAILURE);
+		} else {
+			fprintf(stderr, "[%s:%d]create %s\n", __func__, __LINE__, out_path);
+		}
+	}
+	if (access(in_path, F_OK)) {
+		if (mkfifo(in_path, 0644)) {
+			fprintf(stderr, "[%s:%d]Could not create %s\n", __func__, __LINE__,
+							in_path);
+			exit(EXIT_FAILURE);
+		} else {
+			fprintf(stderr, "[%s:%d]create %s\n", __func__, __LINE__, in_path);
+		}
+	}
+	return 0;
+}
+
+int create_interal_channel(char *path) {
+	char fifo_path[128];
+	int res;
+	sprintf(fifo_path, "/tmp/%s", path);
+	if (access(fifo_path, F_OK) == -1) {
+		res = mkfifo(fifo_path, 0644);
+		if (res != 0) {
+			fprintf(stderr, "[%s:%d]Could not create %s\n", __func__, __LINE__,
+							fifo_path);
+			exit(EXIT_FAILURE);
+		}
+	}
+	fprintf(stderr, "[%s:%d]Create %s\n", __func__, __LINE__, fifo_path);
+	return 0;
+}
+
+void *listen_output(void *arg) {
+	char out_path[256];
+	char pipe_path[256];
+	char buff[256];
+	int out_fd,tx_send,size;
+	struct pollfd pfd;
+	struct member *b = (struct member *)arg;
+
+	sprintf(out_path, "/tmp/vhost-user/%s.out", b->path);
+	sprintf(pipe_path, "/tmp/%s", b->path);
+	fprintf(stderr, "[%s:%d]waiting to open %s\n", __func__, __LINE__, out_path);
+	out_fd = open(out_path, O_RDONLY);
+	fprintf(stderr, "[%s:%d]done open %s]\n", __func__, __LINE__, out_path);
+
+	fprintf(stderr, "[%s:%d]waiting open %s to write\n", __func__, __LINE__,
+					pipe_path);
+	tx_send = open(pipe_path, O_WRONLY); // blocking
+	if (tx_send < 0) {
+		fprintf(stderr, "[%s:%d]fail to open %s\n", __func__, __LINE__, pipe_path);
+		return NULL;
+	}
+	fprintf(stderr, "[%s:%d]successfully open %s to write\n", __func__, __LINE__,
+					pipe_path);
+	pfd.fd=out_fd;
+	pfd.events = POLLIN;
+	while (1) {
+		poll(&pfd, (unsigned long)1, -1);
+		if ((pfd.revents & POLLIN) == POLLIN)
+		{
+			size = read(pfd.fd, buff, sizeof(buff));
+			if (size > 0) {
+				fprintf(stderr, "[%s:%d]buff=%s\n", __func__, __LINE__, buff);
+				if(write(tx_send, buff, strlen(buff) + 1) == 0)
+					break;
+				memset(buff, 0, sizeof(buff));
+			}
+		}
+	}
+	return NULL;
+}
+
+char *strupr(char *src)
+{
+	char*s=src;
+	while(*s!='\0'){
+		*s=toupper(*s);
+		s++;
+	}
+	return src;
+}
+
+int write_to_frontend(char *path, int input_fd) {
+	char fifo_path[128];
+	char buff[1024] = {0};
+	char *new_buf;
+	int rx_get,size;
+	struct pollfd pfd;
+
+	sprintf(fifo_path, "/tmp/%s", path);
+	rx_get = open(fifo_path, O_RDONLY);
+	if (rx_get < 0) {
+		fprintf(stderr, "[%s:%d]Can not open %s\n", __func__, __LINE__, fifo_path);
+		return -1;
+	}
+	fprintf(stderr, "[%s:%d]open rx_get\n", __func__, __LINE__);
+
+	pfd.fd=rx_get;
+	pfd.events = POLLIN;
+	while (1) {
+		poll(&pfd, (unsigned long)1, -1);
+		if ((pfd.revents & POLLIN) == POLLIN)
+		{
+			size = read(rx_get, buff, sizeof(buff));
+			if (size > 0) {
+				fprintf(stderr, "[%s:%d]get data from rx\n", __func__, __LINE__);
+				new_buf=strupr(buff);
+				int ret = write(input_fd, new_buf, strlen(new_buf));
+				if (ret < 0) {
+					fprintf(stderr, "write error\n");
+				}
+				memset(buff, 0, sizeof(buff));
+			}
+		}
+	}
+	return 0;
+}
+
+int open_input(char *path) {
+	char in_path[128];
+	sprintf(in_path, "/tmp/vhost-user/%s.in", path);
+	fprintf(stderr, "[%s:%d]wating for read side and blocking........\n",
+					__func__, __LINE__);
+	int input_fd = open(in_path, O_WRONLY); // blocking here
+	fprintf(stderr, "[%s:%d]Reading side open........\n", __func__, __LINE__);
+	if (input_fd > 0) {
+		fprintf(stderr, "[%s:%d]open %s\n", __func__, __LINE__, in_path);
+		return input_fd;
+	} else {
+		fprintf(stderr, "[%s:%d]fail to open %s\n", __func__, __LINE__, in_path);
+		return -1;
+	}
+}
+
+void *write_input(void *arg) {
+	struct member *b = (struct member *)arg;
+	int input_fd = open_input(b->path);
+	if (input_fd < 0)
+		return NULL;
+	write_to_frontend(b->path, input_fd);
+	return NULL;
+}
+
+void create_thread(char *path, pthread_t *tidp, void *(*func)(void *)) {
+	struct member *arg = (struct member *)malloc(sizeof(struct member));
+	strcpy(arg->path, path);
+
+	if (pthread_create(tidp, NULL, func, (void *)arg) == -1) {
+		fprintf(stderr, "[%s:%d]Fail to create thread\n", __func__, __LINE__);
+	}
+	fprintf(stderr, "[%s:%d]Successfully create thread\n", __func__, __LINE__);
+}
+
+int main(int argc, char **argv) {
+	pthread_t tidp_watch[2];
+	pthread_t tidp_write[2];
+
+	for (int i = 1; i < argc; i++) {
+		prepare_two_pipe_for_crosvm(argv[i]);
+		create_interal_channel(argv[i]);
+		create_thread(argv[i], &tidp_watch[i], &listen_output);
+	}
+	for (int i = 1; i < argc; i++) {
+		create_thread(argv[i], &tidp_write[i], &write_input);
+	}
+	for (int i = 1; i < argc; i++) {
+		pthread_join(tidp_watch[i], NULL);
+		pthread_join(tidp_write[i], NULL);
+	}
+	return 0;
+}
