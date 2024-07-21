@@ -1,0 +1,29 @@
+import sys
+import xml.etree.ElementTree as ET
+
+def process_manifest(filename):
+    # 解析 XML 文件
+    tree = ET.parse(filename)
+    root = tree.getroot()
+
+    # 定义要添加的前缀
+    prefix = "source/Android/"
+
+    # 遍历所有的 project 元素
+    for project in root.findall('project'):
+        path = project.get('path')
+        # 添加前缀到 path 属性中
+        if not path.startswith(prefix):
+            project.set('path', prefix + path)
+
+    # 写回到原始文件
+    tree.write(filename)
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print("Usage: python process_manifest.py <filename>")
+        sys.exit(1)
+
+    filename = sys.argv[1]
+    process_manifest(filename)
+    print(f"Manifest file '{filename}' processed successfully.")
