@@ -1,1 +1,63 @@
-BT driver
+
+在Linux系统中，Bluetooth驱动程序通常会编译成一个或多个内核模块（.ko 文件）。这些模块处理Bluetooth协议栈的各种功能。常见的Bluetooth相关内核模块包括：
+
+bluetooth.ko：基础Bluetooth协议支持。
+btusb.ko：用于支持USB接口的Bluetooth适配器。
+btintel.ko：支持Intel Bluetooth设备。
+btmtk.ko：支持MediaTek Bluetooth设备。
+btrtl.ko：用于支持Realtek Bluetooth设备。
+具体的模块名称和功能可能会有所不同，取决于你的硬件和Linux发行版。
+
+
+
+bluetooth driver和HCI有什么关系？
+
+Bluetooth驱动程序和HCI（Host Controller Interface）之间有密切的关系。HCI是Bluetooth协议栈中用于主机和Bluetooth控制器之间通信的接口。下面是它们之间的关系：
+
+HCI（Host Controller Interface）：
+
+HCI是一个标准化的接口，允许主机（如计算机或手机）与Bluetooth控制器（如Bluetooth适配器）进行通信。
+它定义了主机和控制器之间的数据交换协议和命令集。
+HCI负责处理底层的Bluetooth硬件控制命令和事件。
+Bluetooth驱动程序：
+
+Bluetooth驱动程序包含了实现HCI协议的代码，这些代码允许操作系统与Bluetooth硬件进行通信。
+驱动程序中包括了HCI的实现，使得主机系统能够通过HCI协议与Bluetooth控制器交互。
+驱动程序通常会实现各种HCI命令和事件的处理逻辑，以便实现Bluetooth设备的功能。
+简而言之，Bluetooth驱动程序实现了HCI协议，以便使主机系统能够与Bluetooth控制器进行有效的通信和控制。
+
+bluetooth driver和HCI和H4Protocol的关系是什么
+
+Bluetooth驱动程序、HCI（Host Controller Interface）和H4协议（HCI over UART）之间的关系如下：
+
+HCI（Host Controller Interface）：
+
+HCI是Bluetooth协议栈的一部分，定义了主机和Bluetooth控制器之间的通信接口。它负责处理Bluetooth硬件控制命令和事件，提供了一个标准化的接口用于主机系统与Bluetooth控制器之间的交互。
+HCI协议包括命令、事件和数据包的格式，用于主机和控制器之间的数据传输。
+H4协议（HCI over UART）：
+
+H4协议是HCI协议的一种具体实现方式，专门用于通过UART（通用异步收发传输器）接口进行HCI通信。
+在这种实现中，HCI数据包被封装在UART数据帧中，并通过串行端口（UART）进行传输。H4协议定义了如何将HCI命令、事件和数据分隔成适合UART传输的格式。
+Bluetooth驱动程序：
+
+Bluetooth驱动程序实现了HCI协议，以便主机系统能够与Bluetooth控制器进行有效的通信。驱动程序负责处理HCI命令和事件，并将它们传递到Bluetooth控制器。
+在使用H4协议时，驱动程序还负责将HCI数据包封装为UART格式，并通过UART接口发送和接收数据。它处理HCI over UART的细节，确保数据正确传输。
+简而言之，HCI提供了主机和Bluetooth控制器之间的标准接口，而H4协议是HCI在UART接口上的一种实现方式。Bluetooth驱动程序实现了HCI协议，并在需要时使用H4协议来处理UART通信。
+
+
+hdev->send的含义？
+
+在蓝牙驱动程序中，hdev->send 通常指的是一个函数指针，用于发送数据或命令到 Bluetooth 主机控制器（hci_dev）。这个函数指针通常定义在 hci_dev 结构体中，并由驱动程序实现。
+功能：
+send 函数通常用于将数据包发送到 Bluetooth 主机控制器，以执行特定的操作，例如发送命令、传输数据或控制设备状态。
+驱动程序实现 send 函数时，负责处理将数据包发送到适配器的底层细节，例如将数据包打包成适当的格式并通过适配器的硬件接口发送。
+驱动程序实现：
+驱动程序通常会根据具体的蓝牙硬件和协议栈的要求，实现 send 函数。这个函数在驱动程序初始化时通常会被设置为适当的发送函数。总之，hdev->send 是一个指向发送函数的函数指针，用于在蓝牙驱动程序中将数据发送到蓝牙控制器。
+举几个例子：xxx.ko用的send是xxx
+
+
+
+关于Hprotocol：
+H4Protocol 是一个处理 H4 协议数据的协议层，其构造函数需要多个回调函数来处理不同类型的数据（如 ACL、SCO、HCI 事件和 ISO 数据）以及处理设备断开连接的情况。
+回调函数 用于将接收到的数据传递给 Bluetooth HAL 的回调接口 mCb，这些接口方法 (aclDataReceived, scoDataReceived, hciEventReceived, isoDataReceived) 是 Bluetooth HAL 与 Bluetooth 服务之间的通信桥梁。
+H4Protocol 是一个重要的协议层，用于在 Android 系统中与蓝牙控制器进行通信和数据交换。通过定义多个回调函数处理不同类型的数据和事件，它保证了蓝牙硬件与操作系统之间的高效、可靠的通信连接。
