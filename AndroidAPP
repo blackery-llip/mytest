@@ -1,0 +1,219 @@
+多屏媒体投送应用设计文档​​
+​​版本：4.0 | 目标：实现主屏视频与照片的多屏独立投送​​
+
+​​1. 文档概述​​
+​​1.1 背景与目标​​
+​​背景​​：随着多屏协作需求的增长，用户希望在会议、家庭娱乐或商业展示场景中，将主设备的内容投送至外接屏幕，同时保持主屏的控制能力。
+​​目标​​：基于 Android Presentation API，开发一款支持 ​​视频​​ 和 ​​照片​​ 多屏独立投送的应用，提供流畅的用户体验和高性能渲染。
+​​1.2 范围​​
+​​功能范围​​：
+主屏检测并管理外接屏幕。
+投送视频或照片至指定外接屏幕。
+支持动态切换投送目标、幻灯片播放及手势操作。
+​​非功能范围​​：
+不涉及跨设备网络投送（如 Chromecast）。
+不处理复杂音视频转码（依赖系统解码能力）。
+​​2. 功能需求​​
+​​2.1 核心功能​​
+​​2.1.1 视频投送​​
+​​主屏控制​​：
+选择视频文件（本地/网络）。
+播放/暂停、音量调节、进度拖拽。
+​​多屏投送​​：
+将视频投送至单个或多个外接屏幕。
+支持横竖屏自适应（根据目标屏幕方向）。
+​​动态切换​​：
+运行时切换投送目标，保留当前播放进度。
+​​2.1.2 照片投送​​
+​​主屏控制​​：
+选择本地相册或网络图库。
+设置幻灯片播放间隔（3s/5s/10s）。
+​​多屏投送​​：
+全屏显示照片，支持手势操作（滑动切换、双指缩放）。
+幻灯片模式自动轮播。
+​​元数据展示​​：
+显示照片描述、拍摄时间等元数据（若可用）。
+​​2.1.3 多屏管理​​
+​​屏幕检测​​：
+自动识别已连接的 HDMI、无线投屏等设备。
+显示屏幕名称、分辨率、方向等信息。
+​​投送管理​​：
+独立控制每个外接屏的投送内容（视频/照片）。
+一键关闭所有投送。
+​​2.2 辅助功能​​
+​​驾驶模式​​：
+车辆行驶时禁用外接屏触控操作。
+​​错误提示​​：
+投送失败时提供明确错误原因（如格式不支持、屏幕断开）。
+​​缓存管理​​：
+预加载下一张照片或视频关键帧，减少切换延迟。
+​​3. 系统架构​​
+​​3.1 物理架构​​
++---------------------+  
+|      主屏设备        | （Android 手机/平板）  
+| [控制中心 + 资源管理] |  
++---------------------+  
+    |        |        |  
++-----+  +-----+  +-----+  
+| 屏A |  | 屏B |  | 屏C |  
++-----+  +-----+  +-----+  
+（视频） （照片）  （其他）  
+​​3.2 逻辑架构​​
++----------------+     +----------------+     +----------------+  
+|  屏幕管理模块   |<--->|  视频投送模块  |<--->|  Video Pres.   |  
+| (DisplayManager)|     | (ExoPlayer)    |     | (Surface渲染)   |  
++----------------+     +----------------+     +----------------+  
+  |    ↑                      ↑  
+  |    +----------------------+  
+  ↓  
++----------------+     +----------------+     +----------------+  
+|  照片投送模块   |<--->|  图片处理引擎  |<--->|  Photo Pres.   |  
+| (Glide/Picasso)|     | (缓存与解码)  |     | (ImageView渲染)|  
++----------------+     +----------------+     +----------------+  
+          ↑                      ↑  
+          |                      |  
++----------------+       +----------------+  
+|  用户交互模块   |       |  错误处理模块  |  
+| (UI与手势逻辑)  |       | (异常捕获与恢复)|  
++----------------+       +----------------+  
+​​4. 模块详细设计​​
+​​4.1 屏幕管理模块​​
+​​功能​​
+​​屏幕检测​​：监听外接屏幕的连接与断开事件。
+​​屏幕信息缓存​​：记录屏幕分辨率、方向等元数据。
+​​投送目标绑定​​：为每个外接屏分配唯一标识符。
+​​关键技术​​
+使用 DisplayManager 监听屏幕变化：
+kotlin
+displayManager.registerDisplayListener(displayListener, null)  
+​​4.2 视频投送模块​​
+​​功能​​
+​​视频解码​​：支持主流格式（MP4、MKV、WebM）。
+​​渲染控制​​：通过 SurfaceView 将画面输出至外接屏。
+​​状态同步​​：主屏控制指令实时同步至所有投送目标。
+​​关键技术​​
+​​ExoPlayer 多实例管理​​：
+kotlin
+val player = ExoPlayer.Builder(context).build()  
+player.setMediaItem(MediaItem.fromUri(videoUri))  
+player.setVideoSurface(surface) // 绑定到 Presentation 的 Surface  
+​​4.3 照片投送模块​​
+​​功能​​
+​​图片加载​​：支持本地相册、网络图库及云存储。
+​​幻灯片播放​​：定时切换图片，显示过渡动画。
+​​元数据解析​​：从 EXIF 或 API 接口读取描述信息。
+​​关键技术​​
+​​Glide 图片加载与缓存​​：
+kotlin
+Glide.with(context)  
+     .load(imageUrl)  
+     .diskCacheStrategy(DiskCacheStrategy.ALL)  
+     .into(imageView)  
+​​4.4 用户交互模块​​
+​​功能​​
+​​主屏 UI​​：
+视频/照片选择面板。
+外接屏幕列表与投送状态指示。
+​​手势操作​​：
+外接屏支持滑动切换照片、双指缩放。
+​​UI 设计​​
+​​界面​​	​​元素​​
+​​主屏控制中心​​	- 屏幕列表（名称、分辨率）
+- 投送按钮（视频/照片）
+- 播放控制面板
+​​外接屏视频​​	- 全屏播放画面
+- 隐藏式进度条（悬停显示）
+​​外接屏照片​​	- 全屏图片
+- 底部元信息栏（可选）
+- 幻灯片进度指示
+​​5. 核心交互流程​​
+​​5.1 视频投送流程​​
+mermaid
+sequenceDiagram  
+    participant User  
+    participant MainUI  
+    participant VideoModule  
+    participant VideoPres  
+  
+    User->>MainUI: 选择视频文件  
+    MainUI->>VideoModule: 加载视频  
+    VideoModule->>VideoPres: 创建 Surface 绑定  
+    VideoPres->>外接屏: 渲染画面  
+    User->>MainUI: 点击“投送至屏A”  
+    MainUI->>VideoModule: 启动播放  
+    VideoModule->>VideoPres: 同步播放状态  
+​​5.2 照片幻灯片投送流程​​
+mermaid
+sequenceDiagram  
+    participant User  
+    participant MainUI  
+    participant PhotoModule  
+    participant PhotoPres  
+  
+    User->>MainUI: 选择相册并设置间隔  
+    MainUI->>PhotoModule: 加载图片列表  
+    PhotoModule->>PhotoPres: 预加载首张图片  
+    PhotoPres->>外接屏: 显示首张照片  
+    loop 幻灯片轮播  
+        PhotoPres->>PhotoModule: 请求下一张  
+        PhotoModule->>PhotoPres: 返回图片数据  
+        PhotoPres->>外接屏: 切换图片 + 过渡动画  
+    end  
+​​6. 性能优化​​
+​​6.1 资源管理​​
+​​进程隔离​​：
+xml
+<activity android:name=".VideoPresentationActivity" android:process=":video" />  
+<activity android:name=".PhotoPresentationActivity" android:process=":photo" />  
+​​内存限制​​：为每个 Presentation 进程设置独立内存上限。
+​​6.2 缓存策略​​
+​​缓存类型​​	​​策略​​
+​​图片缓存​​	- 内存缓存：LRU 策略，保留最近使用的图片
+- 磁盘缓存：存储原始高清图
+​​视频缓存​​	- 预加载下一关键帧
+- 使用 ExoPlayer 的默认网络缓存策略
+​​6.3 动态适配​​
+​​分辨率适配​​：根据外接屏尺寸动态缩放图片（CenterCrop/FitCenter）。
+​​方向适配​​：监听屏幕旋转事件，调整 UI 布局。
+​​7. 安全与权限​​
+​​7.1 权限声明​​
+xml
+<uses-permission android:name="android.permission.INTERNET" />  
+<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />  
+<uses-feature android:name="android.hardware.type.automotive" /> <!-- 车载模式可选 -->  
+​​7.2 安全策略​​
+​​驾驶模式​​：车速 >0 时禁用外接屏触控。
+​​数据隔离​​：不同 Presentation 进程间通过 Binder 通信，禁止直接内存共享。
+​​8. 测试计划​​
+​​8.1 测试场景​​
+​​场景​​	​​测试步骤​​	​​预期结果​​
+投送视频至单个外接屏	选择视频并投送	外接屏全屏播放，主屏显示控制面板
+动态切换投送目标	播放中切换目标屏幕	新屏幕无缝续播，旧屏幕停止
+幻灯片播放中断电	外接屏断电后恢复	主屏提示断开，恢复后继续播放
+​​8.2 性能测试​​
+​​指标​​：
+视频首帧渲染时间 ≤500ms。
+照片切换延迟 ≤200ms。
+​​工具​​：Android Profiler、Systrace。
+​​9. 部署与维护​​
+​​9.1 硬件要求​​
+​​主设备​​：Android 8.0+，支持 HDMI 输出或 Miracast。
+​​外接屏幕​​：支持 1080p 或更高分辨率。
+​​9.2 软件依赖​​
+​​第三方库​​：
+ExoPlayer：视频播放。
+Glide：图片加载与缓存。
+Gson：元数据解析。
+​​9.3 维护策略​​
+​​热修复​​：通过 Firebase Remote Config 动态推送补丁。
+​​版本兼容​​：最低支持 API Level 26（Android 8.0）。
+​​10. 附录​​
+​​10.1 术语表​​
+​​术语​​	​​解释​​
+Presentation	Android 用于外接屏独立渲染的 API
+ExoPlayer	Google 开源的媒体播放库
+幻灯片模式	自动轮播图片的功能
+​​10.2 参考文档​​
+Android Presentation API 官方文档
+ExoPlayer 开发者指南
+​​文档终稿​​：通过模块化设计、高效资源管理和严格测试，实现高性能、高可用的多屏投送应用，适用于会议、商业展示及家庭娱乐场景。
