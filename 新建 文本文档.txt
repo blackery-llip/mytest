@@ -1,0 +1,840 @@
+launch_cvd
+  └──▶ 解析参数、布尔参数处理、gflags
+  └──▶ 生成 assemble_cvd 参数
+  └──▶ 调用 assemble_cvd 生成 cuttlefish_config.json
+  └──▶ 读取 config 并设置环境变量（如 CUTTLEFISH_CONFIG_FILE）
+  └──▶ 启动 run_cvd 子进程
+            └──▶ 根据 config 中定义的参数执行各虚拟设备服务
+
+
+
+详细阶段分析
+1. 参数预处理与布尔标志转换
+
+std::vector<std::string> args(argv + 1, argv + argc);
+args = OverrideBoolArg(std::move(args), BoolFlags());
+OverrideBoolArg：
+	把 --enable_gpu / --noenable_gpu 转换为 --enable_gpu=true/false；
+	避免 gflags 解析时误识。
+
+gflags::ParseCommandLineNonHelpFlags(&argc, &argv, false);
+调用 gflags 解析命令行参数，解析后 FLAGS_* 变量被设置；
+比如：FLAGS_verbosity、FLAGS_use_overlay 等。（举例）
+
+
+Launch_cvd启动CF一共有三个过程：
+1）启动参数预处理。主要是通过gflags库，完成对传入参数到FLAGS_XXX的转换。
+2）调用assemble_cvd，生成配置文件---cuttlefish_config.json
+3）启动run_cvd ，完成对虚拟机的启动
+
+一 launch_cvd
+函数入口：host/commands/start/main.cc
+核心函数是：
+int CvdInternalStartMain(int argc, char** argv) {
+  ::android::base::InitLogging(argv, android::base::StderrLogger);
+  std::vector<std::string> args(argv + 1, argv + argc);
+  std::vector<std::string> assemble_args;
+  std::string image_dir;
+  std::vector<std::string> args_copy = args;
+  auto parse_res = ConsumeFlags(
+      {GflagsCompatFlag("system_image_dir", image_dir)}, args_copy);
+  LOG(INFO) << "Using system_image_dir of: " << image_dir;
+  if (!parse_res.ok()) {
+    LOG(ERROR) << "Error extracting system_image_dir from args: "
+               << parse_res.error().FormatForEnv();
+    return -1;
+  } else if (!image_dir.empty()) {
+    assemble_args = {"--system_image_dir=" + image_dir};
+  }
+  std::vector<std::vector<std::string>> spargs = {assemble_args, {}};
+  FlagForwarder forwarder({AssemblerPath(), RunnerPath()}, spargs);
+  // Used to find bool flag and convert "flag"/"noflag" to "--flag=value"
+  // This is the solution for vectorize bool flags in gFlags
+  args = OverrideBoolArg(std::move(args), BoolFlags());
+  for (int i = 1; i < argc; i++) {
+    argv[i] = args[i - 1].data();  // args[] start from 0
+  }
+  gflags::ParseCommandLineNonHelpFlags(&argc, &argv, false);
+  forwarder.UpdateFlagDefaults();
+  gflags::HandleCommandLineHelpFlags();
+  setenv("CF_CONSOLE_SEVERITY", FLAGS_verbosity.c_str(), /* replace */ false);
+  setenv("CF_FILE_SEVERITY", FLAGS_file_verbosity.c_str(), /* replace */ false);
+  auto use_metrics = FLAGS_report_anonymous_usage_stats;
+  FLAGS_report_anonymous_usage_stats = ValidateMetricsConfirmation(use_metrics);
+  if (FLAGS_track_host_tools_crc) {
+    // TODO(b/159068082) Make decisions based on this value in assemble_cvd
+    LOG(INFO) << "Host changed from last run: " << HostToolsUpdated();
+  }
+  auto instance_nums = InstanceNumsCalculator().FromGlobalGflags().Calculate();
+  if (!instance_nums.ok()) {
+    LOG(ERROR) << instance_nums.error().FormatForEnv();
+    abort();
+  }
+  // TODO(schuffelen): Lift instance id assumptions in sandboxing
+  if (CuttlefishConfig::ConfigExists()) {
+    auto previous_config = CuttlefishConfig::Get();
+    CHECK(previous_config);
+    CHECK(!previous_config->Instances().empty());
+    auto previous_instance = previous_config->Instances()[0];
+    const auto& disks = previous_instance.virtual_disk_paths();
+    auto overlay = previous_instance.PerInstancePath("overlay.img");
+    auto used_overlay =
+        std::find(disks.begin(), disks.end(), overlay) != disks.end();
+    CHECK(used_overlay == FLAGS_use_overlay)
+        << "Cannot transition between different values of --use_overlay "
+        << "(Previous = " << used_overlay << ", current = " << FLAGS_use_overlay
+        << "). To fix this, delete \"" << previous_config->root_dir()
+        << "\" and any image files.";
+  }
+  CHECK(!instance_nums->empty()) << "Expected at least one instance";
+  auto instance_num_str = std::to_string(*instance_nums->begin());
+  setenv(kCuttlefishInstanceEnvVarName, instance_num_str.c_str(),
+         /* overwrite */ 1);
+#if defined(__BIONIC__)
+  // These environment variables are needed in case when Bionic is used.
+  // b/171754977
+  setenv("ANDROID_DATA", DefaultHostArtifactsPath("").c_str(),
+         /* overwrite */ 0);
+  setenv("ANDROID_TZDATA_ROOT", DefaultHostArtifactsPath("").c_str(),
+         /* overwrite */ 0);
+  setenv("ANDROID_ROOT", DefaultHostArtifactsPath("").c_str(),
+         /* overwrite */ 0);
+#endif
+  auto assembler_input = WriteFiles(AvailableFilesReport());
+  std::string assembler_output;
+  auto assemble_ret =
+      InvokeAssembler(assembler_input, assembler_output,
+                      forwarder.ArgvForSubprocess(AssemblerPath(), args));
+  if (assemble_ret != 0) {
+    LOG(ERROR) << "assemble_cvd returned " << assemble_ret;
+    return assemble_ret;
+  } else {
+    LOG(DEBUG) << "assemble_cvd exited successfully.";
+  }
+  std::string conf_path;
+  for (const auto& line : android::base::Tokenize(assembler_output, "\n")) {
+    if (android::base::EndsWith(line, "cuttlefish_config.json")) {
+      conf_path = line;
+    }
+  }
+  CHECK(!conf_path.empty()) << "could not find config";
+  auto config = CuttlefishConfig::GetFromFile(conf_path);
+  CHECK(config) << "Could not load config object";
+  setenv(kCuttlefishConfigEnvVarName, conf_path.c_str(), /* overwrite */ true);
+  std::vector<Subprocess> runners;
+  for (const auto& instance : config->Instances()) {
+    SharedFD runner_stdin = SharedFD::Open("/dev/null", O_RDONLY);
+    CHECK(runner_stdin->IsOpen()) << runner_stdin->StrError();
+    setenv(kCuttlefishInstanceEnvVarName, instance.id().c_str(),
+           /* overwrite */ 1);
+    auto run_proc = StartRunner(std::move(runner_stdin), instance,
+                                forwarder.ArgvForSubprocess(RunnerPath()));
+    runners.push_back(std::move(run_proc));
+  }
+  bool run_cvd_failure = false;
+  for (auto& run_proc : runners) {
+    auto run_ret = run_proc.Wait();
+    if (run_ret != 0) {
+      run_cvd_failure = true;
+      LOG(ERROR) << "run_cvd returned " << run_ret;
+    } else {
+      LOG(DEBUG) << "run_cvd exited successfully.";
+    }
+  }
+  return run_cvd_failure ? -1 : 0;
+}
+
+1）gflags标志位处理与转换：gflags 解析命令行参数，解析后 FLAGS_* 变量被设置，如：FLAGS_verbosity、FLAGS_use_overlay 等。
+2）调用 assemble_cvd 并生成配置文件
+auto assemble_ret =
+    InvokeAssembler(assembler_input, assembler_output,
+                    forwarder.ArgvForSubprocess(AssemblerPath(), args));
+• InvokeAssembler() 实际是运行：
+assemble_cvd --system_image_dir=... --cpus=2 ...
+• 参数来源是原始命令行（转化后的）；
+• 标准输入（stdin）中提供了 host-tools 与映像列表（通过 WriteFiles()）；
+• assemble_cvd 会生成 cuttlefish_config.json。
+
+3）加载配置文件并设置环境变量
+auto config = CuttlefishConfig::GetFromFile(conf_path);
+setenv(kCuttlefishConfigEnvVarName, conf_path.c_str(), true);
+cuttlefish_config.json 是构建虚拟机的重要全局配置文件；
+从 assemble_cvd 的输出中提取 cuttlefish_config.json 路径
+加载成 CuttlefishConfig 对象，并设置环境变量 CF_CONFIG_FILE
+
+其中包含了所有 VM 实例（Instance）的信息，例如：
+{
+  "instances": [
+    {
+      "id": "1",
+      "instance_dir": "...",
+      "virtual_disk_paths": [...],
+      ...
+    }
+  ]
+}
+
+
+4）启动 run_cvd 子进程（虚拟设备运行器）
+
+auto run_proc = StartRunner(std::move(runner_stdin), instance,
+                            forwarder.ArgvForSubprocess(RunnerPath()));
+
+	• 构建命令行调用 run_cvd，如：
+run_cvd --cpus=2 --x_res=720 ...
+	• 每个实例启动一个 run_cvd 子进程；
+	• 工作目录设置为 instance.instance_dir()。
+	
+	
+5）等待子进程退出
+auto run_ret = run_proc.Wait();
+if (run_ret != 0) LOG(ERROR) << "run_cvd returned " << run_ret;
+• 等待各个实例的 run_cvd 进程退出；
+• 可查看失败信息、错误码等。
+
+
+
+
+
+二 assemble_cvd
+
+2.1函数入口在：
+
+2.2 使用 Fruit 依赖注入机制来解析和处理 flags
+fruit::Injector<> injector(FlagsComponent);
+然后：
+injector.getMultibindings<LateInjected>() ➜ LateInject
+injector.getMultibindings<FlagFeature>() ➜ ProcessFlags
+
+• FlagFeature 是参数声明 + 验证 +默认值的模块。
+• ProcessFlags(flag_features, args) 实际上就是用自定义的解析逻辑来替代 gflags::ParseCommandLineFlags。
+• 这样可以用统一接口处理 flag，同时获得更强的类型安全、组合性（通过依赖注入自动注册 flags）。
+
+下面详细分析使用 Fruit 依赖注入（DI）机制来解析和处理 flags 的例子
+背景：Cuttlefish 用 Fruit 来声明和处理参数
+传统 gflags 写法长这样：（以proxy_fastboot为例）
+DEFINE_string(proxy_fastboot, "", "");然后通过xxxxx函数将传入参数解析到xxx。
+
+但在 Cuttlefish 中，参数的声明、解析、验证，都通过 Fruit 容器 + FlagFeature 来注册和管理，实现更好的模块解耦和组合能力。
+✅ 1. FlagFeature 实现：FastbootConfigFlagImpl
+
+cpp
+复制编辑
+class FastbootConfigFlagImpl : public FastbootConfigFlag {
+ public:
+  INJECT(FastbootConfigFlagImpl(FastbootConfig& config, ConfigFlag& config_flag))
+      : config_(config), config_flag_(config_flag) {}
+这是一个标准的 依赖注入构造函数，它依赖两个对象：
+	• FastbootConfig：写入配置
+	• ConfigFlag：它本身是一个 flag 组件（这个是依赖项）
+它实现了 FlagFeature 接口，允许参与 flag 的统一解析。
+✅ 2. 定义并解析 flag
+
+cpp
+复制编辑
+Flag proxy_fastboot_flag = GflagsCompatFlag(kName, proxy_fastboot);
+ConsumeFlags({proxy_fastboot_flag}, args);
+	• GflagsCompatFlag 会创建一个 flag 定义，如 --proxy_fastboot
+	• ConsumeFlags 会扫描 args 中是否有这个参数
+	• 如果找到如 --proxy_fastboot=true，就会自动设置：
+
+cpp
+复制编辑
+proxy_fastboot = true;
+然后：
+
+cpp
+复制编辑
+config_.SetProxyFastboot(proxy_fastboot);
+把这个值设置到了 FastbootConfig 结构中（通常是一个共享配置对象）。
+
+✅ 3. 组件注册：FastbootConfigFlagComponent
+
+cpp
+复制编辑
+fruit::Component<fruit::Required<FastbootConfig, ConfigFlag>, FastbootConfigFlag>
+FastbootConfigFlagComponent() {
+  return fruit::createComponent()
+      .bind<FastbootConfigFlag, FastbootConfigFlagImpl>()
+      .addMultibinding<FlagFeature, FastbootConfigFlag>();
+}
+注册了：
+	• 一个绑定：FastbootConfigFlag 是 FastbootConfigFlagImpl
+	• 一个多绑定：这是一个 FlagFeature，会参与 flag 处理流程
+
+✅ 4. 调用流程：assemble_cvd
+在 assemble_cvd 里这样写：
+
+cpp
+复制编辑
+fruit::Injector<> injector(FlagsComponent);
+auto flag_features = injector.getMultibindings<FlagFeature>();
+FlagFeature::ProcessFlags(flag_features, args);
+这时：
+	• 会自动实例化 FastbootConfigFlagImpl
+	• 构造函数里自动注入 FastbootConfig&
+	• 执行 Process()，读取 args、设置 proxy_fastboot 的值
+
+✅ 总结：这个机制的优势
+优点	描述
+✅ 解耦	每个 FlagFeature 可以独立定义在一个模块中，无需集中注册
+✅ 可组合	通过 .install() 把多个组件组合进一个大的 flags 组件
+✅ 可测试	单独测试每个 FlagFeature 不依赖全局 gflags 状态
+✅ 生命周期托管	可以自动注入依赖、延迟构建
+
+
+
+
+🔍 结论先行：--proxy_fastboot 的值由三部分决定（优先级从高到低）
+	1. 命令行参数传入（最高优先）
+	2. 默认值设置（程序内部设置，或通过 FetcherConfig 提取）
+	3. 未设置时为空（由 .Process() 阶段报错或使用备用逻辑）
+
+🧭 整个流程详解
+
+✅ 第一步：launch_cvd 传参
+最终运行的命令可能是：
+
+bash
+复制编辑
+launch_cvd --kernel_path=/path/to/vmlinux ...
+此时，launch_cvd 会将参数 --kernel_path=/path/to/vmlinux 传入到 assemble_cvd，作为标准输入（stdin）的“参数包装”。
+
+✅ 第二步：assemble_cvd 读取参数并写入 gflags
+在 AssembleCvdMain() 中：
+
+cpp
+复制编辑
+auto args = ArgsToVec(argc - 1, argv + 1);
+这一步把 argv 转换为 std::vector<std::string> 形式的参数列表，例如：
+
+cpp
+复制编辑
+args == {"--kernel_path=/path/to/vmlinux", "--use_overlay=true", ...}
+
+✅ 第三步：FlagFeature 组件注册并参与解析
+每个 FlagFeature（如 KernelPathFlag）会提供它要处理的参数名：
+
+cpp
+复制编辑
+std::vector<Flag> Flags() override {
+  return {
+    GflagsCompatFlag("kernel_path", kernel_path_),
+  };
+}
+这意味着：只要 args 里包含 --kernel_path=...，就会解析并赋值到 kernel_path_ 成员变量里。
+
+✅ 第四步：执行 .ProcessFlags() 实际赋值
+
+cpp
+复制编辑
+auto flag_features = injector.getMultibindings<FlagFeature>();
+FlagFeature::ProcessFlags(flag_features, args);
+这个函数内部其实就是：
+	• 遍历每个 FlagFeature 提供的 Flag
+	• 调用 flag.Parse(args)（或 gflags 的 ParseCommandLineFlags）
+	• 设置对应变量
+最终，kernel_path_ 被设置为 /path/to/vmlinux。
+
+✅ 第五步：默认值补全（Fallback）
+如果你没有传入 --kernel_path，那默认值可能来源于：
+
+cpp
+复制编辑
+ExtractKernelParamsFromFetcherConfig(fetcher_config);
+这是 assemble_cvd 前面读入的 FetcherConfig 中携带的信息：
+
+json
+复制编辑
+{
+  "kernel": "/prebuilt/kernel/vmlinux",
+  "initrd": "...",
+  ...
+}
+于是程序调用：
+
+cpp
+复制编辑
+DEFINE_string(kernel_path, "", "Kernel path");
+FLAGS_kernel_path = config["kernel"];
+最终 --kernel_path 参数依然有了默认值，只不过不是用户命令行写的，而是 FetcherConfig 给的。
+
+🧪 示例：验证这个机制
+你可以尝试运行：
+
+bash
+复制编辑
+launch_cvd --kernel_path=/my/custom/kernel ...
+最终在 assemble_cvd 阶段，你会看到：
+
+bash
+复制编辑
+kernel_path_ == "/my/custom/kernel"
+如果不传，则默认值可能是：
+
+bash
+复制编辑
+kernel_path_ == "/prebuilt/kernel/vmlinux"
+
+✅ 小结：--kernel_path 的值是这样确定的
+来源	优先级	如何设定
+✅ 用户命令行传入	最高	launch_cvd --kernel_path=...
+✅ FetcherConfig 默认值	中	assemble_cvd 中提取并设置 gflags 默认
+❌ 不设	最低	会在 KernelPathFlag::Process() 中报错或 fallback
+
+
+下面以display数量的例子重新进行分析。
+快速理解整体流程（概要）
+
+text
+复制编辑
+1. 用户传入命令行参数，如：
+   --display0=720x1280 --display=1080x1920 --display=1920x1080
+2. assemble_cvd:
+   构建 Fruit Injector → 获取所有 FlagFeature → 调用 ProcessFlags
+3. 调用 DisplaysConfigsFlagImpl::Process(args)
+4. 调用 ParseDisplayConfigsFromArgs:
+   - 提取所有 --displayX 和 --display 参数
+   - 调用 ParseDisplayConfig 解析为结构体
+5. 设置给 DisplaysConfigs 对象，供后续组件使用
+
+🧩 结构图（流程图）
+
+mermaid
+复制编辑
+graph TD
+  A[命令行输入: --display0=720x1280 --display=1920x1080] --> B[assemble_cvd 解析参数]
+  B --> C[FlagFeature::ProcessFlags 调用 DisplaysConfigsFlagImpl::Process()]
+  C --> D[ParseDisplayConfigsFromArgs(args)]
+  D --> E[ConsumeFlags(多个 display flags)]
+  E --> F[ParseDisplayConfig("720x1280")] --> G[生成 DisplayConfig 结构体]
+  E --> H[Setter(lambda) 处理 repeated --display]
+  H --> I[ParseDisplayConfig("1920x1080")] --> J[追加到列表]
+  J --> K[display_configs_.SetConfigs(最终列表)]
+✅ 逐步详细解析
+
+1. FlagFeature 实现类：DisplaysConfigsFlagImpl
+
+cpp
+复制编辑
+class DisplaysConfigsFlagImpl : public DisplaysConfigsFlag {
+ public:
+  INJECT(DisplaysConfigsFlagImpl(DisplaysConfigs& configs, ConfigFlag& config_flag))
+	• 使用 Fruit 的 INJECT(...) 宏注入：
+		○ DisplaysConfigs& 是一个共享配置类，用来存储结果
+		○ ConfigFlag& 是基础 FlagFeature 的依赖
+
+2. Process()：统一解析 flags
+
+cpp
+复制编辑
+Result<void> Process(std::vector<std::string>& args) override {
+  display_configs_.SetConfigs(CF_EXPECT(ParseDisplayConfigsFromArgs(args)));
+  return {};
+}
+	• 调用了 ParseDisplayConfigsFromArgs(args)
+	• 得到多个 DisplayConfig 结构，设置给 DisplaysConfigs
+
+3. ParseDisplayConfigsFromArgs：解析参数的核心逻辑
+
+cpp
+复制编辑
+std::string display0_flag_value;
+std::vector<std::string> repeated_display_flag_values;
+const std::vector<Flag> display_flags = {
+  GflagsCompatFlag("--display0", display0_flag_value),
+  GflagsCompatFlag("--display", /*Setter lambda*/)
+};
+📌 特点：
+	• 前 4 个参数（--display0 ~ --display3） 是一一对应赋值到变量
+	• 重复参数（--display） 使用 Setter 把每个值追加到 vector 中
+
+cpp
+复制编辑
+.Setter([&](const FlagMatch& match) {
+  repeated_display_flag_values.push_back(match.value);
+  return {};
+})
+
+4. ConsumeFlags → 参数解析 + 剩余参数回写
+
+cpp
+复制编辑
+CF_EXPECT(ConsumeFlags(display_flags, args));
+	• 会匹配 args 中的参数并设置值
+	• 未匹配的参数会被保留（用于其他 flag）
+
+5. 参数转换为结构体对象
+
+cpp
+复制编辑
+auto display = CF_EXPECT(ParseDisplayConfig(display0_flag_value));
+	• 每个 --displayX 的值会被单独解析成结构体（比如 width, height, dpi 等）
+	• 所有解析结果会被 push 进最终的 std::vector<DisplayConfig>
+
+6. 配置写入共享对象
+
+cpp
+复制编辑
+display_configs_.SetConfigs(displays_configs);
+这一步非常关键，它把结构化的结果注入到 DisplaysConfigs 中，供后面其他模块使用。
+
+
+
+
+2.3 配置构建和输出
+auto guest_configs = GetGuestConfigAndSetDefaults();// 构建例如
+auto config = InitFilesystemAndCreateConfig(...);
+这是整个 assemble_cvd 的核心输出：
+• 创建虚拟机 Guest 的配置；
+• 初始化 overlay 文件系统、磁盘镜像等；
+• 输出 cuttlefish_config.json 路径（用于 run_cvd 启动）。
+
+2.3.1 GetGuestConfigAndSetDefaults
+从gflags 宏定义的参数（如 FLAGS_boot_image, FLAGS_kernel_path, FLAGS_system_image_dir 等）中提取出用于初始化多个虚拟机实例（guest）所需的配置。其实也就是收集了这三个flag
+
+初次之外，还从相关的image中提取相关信息：
+1）boot image 中提取 Android 版本（如 "13.0.0"），用于后续判断兼容性。
+• ReadAndroidVersionFromBootImage(cur_boot_image)
+2）提取system image 中的配置（android-info.txt）
+auto res = GetAndroidInfoConfig(instance_android_info_txt, "gfxstream");
+guest_config.gfxstream_supported = res.ok() && res.value() == "supported";
+
+
+✅ 为什么这类 flag 还用 gflags 宏？
+这些参数的特点是：
+特性	是否符合
+所有子模块都需要使用	✅ 是的
+启动流程非常早	✅ 是的
+不属于某个模块/子组件	✅ 是的
+不需要注入/插件式扩展	✅ 是的
+
+所以用 gflags 宏很合适。它们在程序最早期就被访问和使用，不适合通过依赖注入注入一个 flag processor。
+✅ 和 FlagFeature/GflagsCompatFlag 有什么区别？
+项目	DEFINE_* 宏	FlagFeature 机制
+定义方式	DEFINE_bool/DEFINE_string 等	GflagsCompatFlag(...)
+存储	全局变量（如 FLAGS_boot_image）	局部临时变量 + Setter 回调
+模块感知	❌ 无	✅ 有
+Fruit 注入	❌ 不支持	✅ 支持
+XML 输出	❌ 基本无	✅ 支持 WriteGflagsCompatHelpXml
+典型用途	启动早期配置、常用参数	模块化功能扩展、实验性功能
+✅ 所以，Cuttlefish 中 Flag 的实际分类是这样的：
+参数名	类型	机制	举例
+--boot_image, --kernel_path	启动必须、全局	DEFINE_string + FLAGS_*	用于 ReadGuestConfig()
+--proxy_fastboot, --display0	模块独立功能	FlagFeature + GflagsCompatFlag	用于各模块 Process()
+
+
+总结：
+ReadGuestConfig() 负责 从 gflags 参数与 boot/system 镜像中提取每个虚拟机实例的启动配置信息，是虚拟机启动配置流水线的第一环，直接决定后续 crosvm 启动方式与功能支持情况。
+
+
+2.3.2 InitFilesystemAndCreateConfig
+这是 launch_cvd 流程中的核心步骤之一，主要完成 配置初始化、文件系统准备、快照恢复、必要目录创建 等工作，最终将配置保存为磁盘可读的 JSON，并生成软链接，以便后续 assemble_cvd 和 run_cvd 使用。
+
+Result<const CuttlefishConfig*> InitFilesystemAndCreateConfig(...) {
+  {
+    // config 初始化与恢复
+    auto config = InitializeCuttlefishConfiguration(...);
+
+    // 如果提供了 snapshot 路径，则进行 snapshot 恢复 + 打日志分隔
+    if (!FLAGS_snapshot_path.empty()) {
+        RestoreHostFiles(...);
+        写入日志分隔线；
+    }
+
+    // 遍历每个 instance，判断是否需要重建 composite disk
+    // 同时记录最大 sim 数量
+    for (instance : config.Instances()) {
+        OsCompositeDiskBuilder/ApCompositeDiskBuilder(...);
+    }
+
+    // 判断是否需要清理旧文件（根据 overlay 模式 + 是否重建）
+    preserving = PreservingOnResume(...);
+    CleanPriorFiles(preserving, ...);
+
+    // 创建 root/config/instance/env 等目录
+    EnsureDirectoryExists(...);
+
+    // 为每个 instance 创建目录、vsock、GRPC、UDS 路径等
+    for (instance : config.Instances()) {
+        EnsureDirectoryExists(instance.xxxxx);
+        CreateLegacySymlinks(...);
+    }
+
+    SaveConfig(config); // 重要：将内存中的 config 序列化到磁盘；保存之后 CuttlefishConfig::Get() 才能正确获取。
+  }
+
+  // config 保存之后重新获取 singleton（持久化版本）
+  auto config = CuttlefishConfig::Get();
+
+  // 替换 assembly_dir 软链接（为了兼容性）
+  if (!InSandbox()) {
+    symlink(config->assembly_dir(), FLAGS_assembly_dir);
+  }
+
+  // 替换 instance_dir_runtime 的软链接（为了 legacy 支持）
+  if (!InSandbox()) {
+    symlink(first_instance_dir, FLAGS_instance_dir + "_runtime");
+  }
+
+  // 创建动态磁盘文件（如 userdata、cache、metadata）
+  CreateDynamicDiskFiles(...);
+
+  return config;
+}
+
+
+其中最重要的是：InitializeCuttlefishConfiguration
+这个函数的主要任务是：
+	基于 FLAGS、guest_configs 和依赖注入信息（Injector），构造出一个完整的 CuttlefishConfig 对象，并准备好环境配置与每个虚拟机实例的独立配置。
+1）注入配置碎片（ConfigFragment）
+for (const auto& fragment : injector.getMultibindings<ConfigFragment>()) {
+  CHECK(tmp_config_obj.SaveFragment(*fragment)) << "Failed to save fragment";
+}
+作用：
+	• 使用 fruit::Injector 获取所有 ConfigFragment 多重绑定（通过插件或组件注册）
+	• 每个 fragment 负责设置配置中某一子模块，如：
+		○ 网络配置
+		○ 键盘/鼠标/控制器
+		○ 录屏功能
+		○ Sensor HAL 模拟
+	• 这些 fragment 会被注入并保存到 config 对象中
+
+2. 设置基本路径
+tmp_config_obj.set_root_dir(root_dir);
+tmp_config_obj.set_environments_uds_dir(...);
+tmp_config_obj.set_instances_uds_dir(...);
+作用：确定工作目录和 socket 路径，用于：
+	• gRPC / vsock / control interface 的 socket 路径
+	• 各个 instance 的配置和资源目录
+	• 后续子进程读取配置的默认位置
+3. 计算实例数量与 VMM
+auto instance_nums = CF_EXPECT(InstanceNumsCalculator().FromGlobalGflags().Calculate());
+作用：通过 flags 计算需要启动多少个实例。
+std::vector<std::string> vm_manager_vec = android::base::Split(FLAGS_vm_manager, ",");
+• 每个实例都要使用同一个 VM 管理器（如 crosvm, qemu）
+• 对 FLAGS_vm_manager 做统一性检查
+auto vmm_mode = CF_EXPECT(ParseVmm(vm_manager_vec[0]));
+auto vmm = GetVmManager(vmm_mode, guest_configs[0].target_arch);
+根据虚拟机管理器字符串（如 crosvm）构造具体管理器对象
+并写入配置中
+
+4. 安全 HAL 配置（KeyMint/Gatekeeper）
+if (guest_configs[0].target_arch == Arch::RiscV64) {
+  SetCommandLineOptionWithMode("secure_hals", "keymint,gatekeeper,oemlock", ...);
+} else {
+  SetCommandLineOptionWithMode("secure_hals", "oemlock,guest_keymint_insecure,...", ...);
+}
+作用：
+	• 为不同架构选择不同的 HAL 启用策略
+	• 如 RISC-V 开启完整 keymint，x86/arm 可能为“模拟 insecure 模式”
+auto secure_hals = CF_EXPECT(ParseSecureHals(FLAGS_secure_hals));
+CF_EXPECT(ValidateSecureHals(secure_hals));
+tmp_config_obj.set_secure_hals(secure_hals);
+
+
+5 WebRTC 远程连接参数（cert 路径 / signal server 地址等）
+
+/ streaming, webrtc setup
+  tmp_config_obj.set_webrtc_certs_dir(FLAGS_webrtc_certs_dir);
+  tmp_config_obj.set_sig_server_secure(FLAGS_webrtc_sig_server_secure);
+  // Note: This will be overridden if the sig server is started by us
+  tmp_config_obj.set_sig_server_port(FLAGS_webrtc_sig_server_port);
+  tmp_config_obj.set_sig_server_address(FLAGS_webrtc_sig_server_addr);
+  tmp_config_obj.set_sig_server_path(FLAGS_webrtc_sig_server_path);
+  tmp_config_obj.set_sig_server_strict(FLAGS_verify_sig_server_certificate);
+
+
+6 设置 Bluetooth/NFC 等硬件模拟器支持
+bool is_bt_netsim = FLAGS_netsim || FLAGS_netsim_bt;
+tmp_config_obj.set_enable_host_bluetooth(FLAGS_enable_host_bluetooth || is_bt_netsim);
+tmp_config_obj.set_enable_host_bluetooth_connector(FLAGS_enable_host_bluetooth && !is_bt_netsim);
+
+• 判断 netsim 启用情况
+• 决定是 host 处理蓝牙/NFC，还是交由 netsim。
+
+
+7 获取 --gnss_file_path, --dpi, --x_res, --cpus 等支持向量化的 flags
+std::vector<std::string> gnss_file_paths = CF_EXPECT(GET_FLAG_STR_VALUE(gnss_file_path));
+std::vector<int> x_res_vec = CF_EXPECT(GET_FLAG_INT_VALUE(x_res));
+...
+std::vector<bool> pause_in_bootloader_vec = CF_EXPECT(GET_FLAG_BOOL_VALUE(pause_in_bootloader));
+
+• 作用：为多实例配置准备每个实例的参数（如分辨率、CPU 数、是否启用 GPU、USB 支持等）。
+• 所有这些 GET_FLAG_*_VALUE 取回的是「按实例个数展开」的向量参数（通过你前面提到的 InstanceNumsCalculator().Calculate() 决定多少个实例）。
+
+8 设置图形相关参数（GPU 模式、图形管线配置等）
+std::vector<std::string> gpu_mode_vec = CF_EXPECT(GET_FLAG_STR_VALUE(gpu_mode));
+std::vector<std::string> gpu_context_types_vec = CF_EXPECT(GET_FLAG_STR_VALUE(gpu_context_types));
+std::vector<std::string> guest_vulkan_driver_vec = CF_EXPECT(GET_FLAG_STR_VALUE(guest_vulkan_driver));
+
+• 这些参数是用来控制 GPU 渲染方式的。
+• 后续将用于配置每个实例的图形环境（是否使用 virglrenderer, gfxstream, vulkan, etc.）
+
+9 各虚拟机运行时依赖路径配置
+std::vector<std::string> crosvm_binary_vec = CF_EXPECT(GET_FLAG_STR_VALUE(crosvm_binary));
+std::vector<std::string> seccomp_policy_dir_vec = CF_EXPECT(GET_FLAG_STR_VALUE(seccomp_policy_dir));
+std::vector<std::string> qemu_binary_dir_vec = CF_EXPECT(GET_FLAG_STR_VALUE(qemu_binary_dir));
+
+用于指明 Cuttlefish 的虚拟化后端（如 Crosvm 或 QEMU）的执行路径与策略路径。
+
+
+10  proto 配置解析
+if (!FLAGS_displays_textproto.empty() || !FLAGS_displays_binproto.empty()) {
+  instances_display_configs = CF_EXPECT(ParseDisplaysProto());
+}
+如果显示配置是用 Protobuf 格式提供的，则使用 ParseDisplaysProto() 解析出每个实例的 DisplayConfig。
+
+11 netsim 与 host 蓝牙/NFC 设置
+bool is_any_netsim = FLAGS_netsim || FLAGS_netsim_bt || FLAGS_netsim_uwb;
+bool is_bt_netsim = FLAGS_netsim || FLAGS_netsim_bt;
+bool is_uwb_netsim = FLAGS_netsim || FLAGS_netsim_uwb;
+
+这些布尔变量决定是否开启虚拟蓝牙/UWB 网络仿真服务 netsim，以及是否禁用 host 的 bt_connector 等。
+tmp_config_obj.set_enable_host_bluetooth(FLAGS_enable_host_bluetooth || is_bt_netsim);
+tmp_config_obj.set_enable_host_bluetooth_connector(FLAGS_enable_host_bluetooth && !is_bt_netsim);
+
+
+12 获取所有 vector 参数（多实例支持）
+std::vector<int> x_res_vec = CF_EXPECT(GET_FLAG_INT_VALUE(x_res));
+...
+std::vector<std::string> webrtc_assets_dir_vec = CF_EXPECT(GET_FLAG_STR_VALUE(webrtc_assets_dir));
+
+是通过自定义宏 GET_FLAG_*_VALUE 将一组命令行参数（支持用逗号分隔表示多实例）转换为 std::vector<T>，使得每个虚拟机实例都可以有独立配置，例如：
+--x_res=720,1080,1440
+表示 3 个实例的分辨率分别是 720p、1080p 和 1440p。
+
+
+
+13snapshot、network、fail-fast、vcpu 等基础参数
+const bool restore_from_snapshot = !std::string(FLAGS_snapshot_path).empty();
+...
+std::vector<std::string> vcpu_config_vec = CF_EXPECT(GET_FLAG_STR_VALUE(vcpu_config_path));
+这些用于决定是否从 snapshot 启动、是否指定 vCPU 配置文件、是否开启 "fail fast" 机制等。
+
+14各服务（rootcanal、casimir、pica 等）端口推导
+auto rootcanal_instance_num = *instance_nums.begin() - 1;
+tmp_config_obj.set_rootcanal_hci_port(7300 + rootcanal_instance_num);
+
+通过 instance_nums（当前的 instance ID 集合），推导出服务运行的端口，确保多实例时不会冲突。
+类似的还有：
+	• casimir_*_port
+	• pica_uci_port
+	• vhal_proxy_server_port
+
+15 环境级配置 EnvironmentConfig
+auto environment_name = std::string("env-") + std::to_string(instance_nums[0]);
+auto mutable_env_config = tmp_config_obj.ForEnvironment(environment_name);
+CuttlefishConfig 支持 每个 instance 属于某个“环境”（environment），通过 .ForEnvironment() 进入配置子空间，设置如 WiFi、mac80211_hwsim 等内容。
+
+16 WiFi 与 wmediumd 启动判断
+const bool start_wmediumd = tmp_config_obj.virtio_mac80211_hwsim() &&
+                            FLAGS_vhost_user_mac80211_hwsim.empty() &&
+                            FLAGS_enable_wifi;
+
+这是虚拟 WiFi 配置的核心逻辑：
+	• 若开启了 mac80211_hwsim 且未使用 vhost user socket 且用户要求启用 WiFi
+	• 则自动启动 wmediumd 并分配相关 UDS 路径给它用于通信
+
+
+16 实例字段填充：基础功能开关
+instance.set_crosvm_use_balloon(use_balloon_vec[instance_index]);
+instance.set_use_pmem(use_pmem_vec[instance_index]);
+...
+instance.set_enable_gnss_grpc_proxy(start_gnss_proxy_vec[instance_index]);
+
+这些是每个实例是否开启某个硬件或模拟功能的标志，例如：
+	• 是否启用 PMEM
+	• 是否启用 GNSS 模拟器
+	• 是否支持 RNG balloon
+	• 是否开启 bootanimation
+	• 是否启用 USB 模拟器
+	• 等等
+
+17 启动参数、序列号、vsock、CPU 配置等
+instance.set_extra_bootconfig_args(...);
+instance.set_serial_number(...);
+instance.set_vsock_guest_cid(...);
+instance.set_cpus(...);
+instance.set_smt(...);
+
+• 设置用户传入或系统自动生成的启动参数；
+• 设置串口号（随机或固定）；
+• 设置 vsock CID 和端口生成器；
+• 设置 CPU 核心数量和 SMT 模式（必须为2的倍数）；
+
+18 图形显示 & 输入设备配置
+instance.set_display_configs(display_configs);
+instance.set_touchpad_configs(touchpad_configs);
+
+• 通过从 DisplayConfigs 和 TouchpadConfigs 的 fruit 注入绑定中获取；
+• 如果传入了 --x_res 等参数也会被考虑，但优先使用 protobuf 传入的配置；
+
+
+19 内存与数据镜像格式
+instance.set_memory_mb(memory_mb_vec[instance_index]);
+instance.set_ddr_mem_mb(memory_mb_vec[instance_index] * 1.2);
+instance.set_userdata_format(userdata_format_vec[instance_index]);
+• 设置内存大小；
+• 设置 DDR 内存为主内存的 1.2 倍；
+• 设置 userdata 镜像格式（如 ext4、f2fs）；
+
+20网络接口 & MAC/IP 地址生成
+instance.set_ethernet_mac(...);
+instance.set_wifi_mac(...);
+instance.set_ethernet_ipv6(...);
+• 调用 GenerateEthMacForInstance() 等函数为每个 instance 生成不同的 MAC；
+• 同时为 Ethernet 生成对应的 IPv6 地址；
+• 最终每个 instance 拥有唯一的 MAC/IP 地址组合；
+
+
+21 调试端口与其它服务端口
+
+instance.set_qemu_vnc_server_port(...);
+instance.set_adb_host_port(...);
+instance.set_fastboot_host_port(...);
+...
+instance.set_tombstone_receiver_port(calc_vsock_port(6600));
+instance.set_audiocontrol_server_port(9410);
+instance.set_lights_server_port(calc_vsock_port(6900));
+
+• ADB、Fastboot、VNC 调试端口根据 instance number 生成；
+• 其他服务如 tombstone、audio control、lights 通过 vsock port 构造函数来生成。
+
+22 网络配置
+instance.set_wifi_mac_prefix(5554 + (num - 1));
+每个实例的 WiFi MAC 地址前缀不同：5554，5555，..
+
+23 WebRTC 配置（流式输出）
+instance.set_enable_webrtc(start_webrtc_vec[instance_index]);
+instance.set_webrtc_assets_dir(webrtc_assets_dir_vec[instance_index]);
+instance.set_webrtc_tcp_port_range(...);
+instance.set_webrtc_udp_port_range(...);
+• 设置 WebRTC 端口（TCP/UDP）
+• 默认仅第一个实例启动 signaling server 或代理：
+if (!is_first_instance || !start_webrtc_vec[instance_index]) {
+  instance.set_start_webrtc_signaling_server(false);
+} else {
+  instance.set_start_webrtc_signaling_server(FLAGS_start_webrtc_sig_server);
+  instance.set_start_webrtc_sig_server_proxy(文件存在 && !FLAGS_start_webrtc_sig_server);
+}
+
+
+24 蓝牙、Netsim、Casimir、Pica、VHAL 配置
+只有第一个实例（is_first_instance）才启动以下组件：
+instance.set_start_netsim(is_first_instance && is_any_netsim);
+instance.set_start_rootcanal(is_first_instance && !is_bt_netsim && ...);
+instance.set_start_casimir(is_first_instance && ...);
+instance.set_start_pica(is_first_instance && !is_uwb_netsim && ...);
+instance.set_start_vhal_proxy_server(is_first_instance && FLAGS_enable_vhal_proxy_server && ...);
+
+25 wmediumd 与 AP 启动流程
+instance.set_start_wmediumd_instance(is_first_instance && start_wmediumd);
+如果 start_wmediumd_instance 为真，并且 FLAGS_ap_rootfs_image, FLAGS_ap_kernel_image 都非空，则设置 ap_boot_flow：
+	• 默认使用 LegacyDirect（未来可能切换为 Grub）
+	• 否则设置为 None
+
+
+
+
+
