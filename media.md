@@ -9,6 +9,11 @@ MIPI-CSI 全称：Mobile Industry Processor Interface - Camera Serial Interface
 数据以帧/行格式传输（图像像素）
 
 应用场景：
+| Syntax | Description |
+| ----------- | ----------- |
+| Header | Title |
+| Paragraph | Text |
+
 芯片	    摄像头接口	  常用标准
 手机 SoC	MIPI-CSI2	  RAW10/12
 STM32MP1	DCMI/MIPI	  YUV422/RAW
