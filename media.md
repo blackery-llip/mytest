@@ -60,8 +60,8 @@ omap3isp = TI OMAP3 SoC 上集成的 ISP 硬件的 Linux 驱动，用于实现�
 <img width="634" alt="image" src="https://github.com/user-attachments/assets/d9b26463-f709-4a97-99dc-325e11d2be60" />
 
 模块组成详解：
-CCDC：摄像头控制器，接收 RAW 图像（来自 MIPI 或平行接口）
-H3A：自动对焦（AF）、自动曝光（AE）、自动白平衡（AWB）
-Previewer：	去马赛克、色彩校正、伽马等
-Resizer：	图像缩放输出
-AEWB/AFF：	用于图像分析
+- CCDC：摄像头控制器，接收 RAW 图像（来自 MIPI 或平行接口）
+- H3A：自动对焦（AF）、自动曝光（AE）、自动白平衡（AWB）
+- Previewer：	去马赛克、色彩校正、伽马等
+- Resizer：	图像缩放输出
+- AEWB/AFF：	用于图像分析
