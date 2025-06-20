@@ -9,45 +9,28 @@ MIPI-CSI 全称：Mobile Industry Processor Interface - Camera Serial Interface
 数据以帧/行格式传输（图像像素）
 
 应用场景：
-| Syntax | Description |
-| ----------- | ----------- |
-| Header | Title |
-| Paragraph | Text |
-
-芯片	    摄像头接口	  常用标准
-手机 SoC	MIPI-CSI2	  RAW10/12
-STM32MP1	DCMI/MIPI	  YUV422/RAW
-NVIDIA    Jetson	    MIPI-CSI2	支持 ISP 流
+| 芯片	 | 摄像头接口 | 常用标准 |
+| ----------- | ----------- |----------- |
+| 手机 SoC | TMIPI-CSI2 | RAW10/12 |
+| STM32MP1 | DCMI/MIP | YUV422/RAW |
+| NVIDIA | Jetson | MIPI-CSI2	支持 ISP 流 |
+    	
 
 ## 1.2 ISP 是什么？
 ISP 全称：Image Signal Processor（图像信号处理器）
 作用：是摄像头图像数据从原始传感器格式（如 RAW）转换为**可视图像（如 YUV/JPEG）**的处理单元。
 核心处理功能包括：
-阶段	      功能
-黑电平校正	  消除图像偏移
-去噪	      降低暗光图像噪声
-白平衡     	调整 RGB 颜色一致性
-伽马校正	    匹配人眼视觉
-CFA 解码	  将 Bayer RAW 解码成 RGB
-色彩校正	    基于相机配置表
+| 阶段		 | 功能 | 
+| ----------- | ----------- |
+| 黑电平校正 | 消除图像偏移 | 
+| 去噪 |  降低暗光图像噪声 |
+| 白平衡  | 调整 RGB 颜色一致性 | 
+| CFA 解码 | 将 Bayer RAW 解码成 RGB |
+| 色彩校正 | 基于相机配置表 |
 
 ## 1.3 MIPI-CSI 与 ISP 的关系图
+<img width="350" alt="image" src="https://github.com/user-attachments/assets/4c8d4e2c-b721-45d3-bebe-b80534b28e7a" />
 
-  摄像头 Sensor
-       │     (RAW10/12 数据)
-       ▼
-+-------------+
-|  MIPI-CSI2  | ← 高速串行传输总线
-+-------------+
-       │
-       ▼
-+-------------+
-|     ISP     | ← 图像信号处理模块
-|  (Bayer解码,白平衡,降噪等)
-+-------------+
-       │
-       ▼
-   应用程序（YUV图像、MJPEG）
 ## 1.3 实际工程中怎么理解？
 组件	        举例	              作用说明
 摄像头模组	    OV5640、IMX219 等	  输出 RAW10/RAW12 图像
