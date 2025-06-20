@@ -1,3 +1,4 @@
+Fefer：https://yellowmax.blog.csdn.net/article/details/80718831?spm=1001.2101.3001.6650.8&utm_medium=distribute.pc_relevant.none-task-blog-2%7Edefault%7EBlogCommendFromBaidu%7ERate-8-80718831-blog-114541939.235%5Ev43%5Epc_blog_bottom_relevance_base5&depth_1-utm_source=distribute.pc_relevant.none-task-blog-2%7Edefault%7EBlogCommendFromBaidu%7ERate-8-80718831-blog-114541939.235%5Ev43%5Epc_blog_bottom_relevance_base5&utm_relevant_index=14
 # 1 camera 硬件
 ## 1.1 MIPI-CSI 是什么？
 MIPI-CSI 全称：Mobile Industry Processor Interface - Camera Serial Interface
