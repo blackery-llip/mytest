@@ -4,6 +4,7 @@
 而是通过一个priv私有数据指针指向一个缓冲区实现，比如vring_virtqueue。
 也就是说vring_virtqueue只是 virtqueue 的一种具体实现方式。
 vring_virtqueue的底层是vring。
+~~~cpp
 struct virtqueue {
     struct list_head list;
     void (*callback)(struct virtqueue *vq);
@@ -13,6 +14,7 @@ struct virtqueue {
     unsigned int num_free;
     void *priv;
 };
+~~~
 1）list
 struct list_head list是链表节点， 将这个virtqueue 链接到virtio device的队列链表中。
 list_head是双向链表，virtio device中的list是链表的头节点.
@@ -37,10 +39,11 @@ virtqueue的名字。
 
 7）void *priv
 指向具体实现的私有数据（如 struct vring_virtqueue），用于关联底层实现（如 vring）与抽象队列。
+~~~cpp
 // vring_virtqueue 初始化时设置 priv
 struct vring_virtqueue *vvq = kmalloc(sizeof(*vvq), GFP_KERNEL);
 vq->priv = vvq;
-
+~~~
 
 
 也就是说，vring是virtio中用于数据传输的环形缓冲区，而virtqueue是抽象层，提供队列的管理接口。vring_virtqueue则是将两者结合起来的具体实现。
@@ -51,6 +54,7 @@ vq->priv = vvq;
 
 实际上，virtqueue 是vring_virtqueue的首个元素，所以，vring_virtqueue可以看成是一个virtqueue 。
 这也正是两者的继承关系。
+~~~cpp
 struct vring_virtqueue {
     struct virtqueue vq; // 继承virtqueue 
     /*基础控制字段*/
@@ -123,9 +127,10 @@ struct vring_virtqueue {
     /* DMA, allocation, and size information */
     bool we_own_ring;
 };
-
+~~~
 
 ## 1.3 vring 
+~~~cpp
 struct vring {
     unsigned int num;
     vring_desc_t *desc; 是数组！！！，C中链表用list
@@ -134,8 +139,9 @@ struct vring {
 
 
 };
-
+~~~
 ### 1.3.1 关于三种类型的对齐要求
+~~~cpp
 #define VRING_AVAIL_ALIGN_SIZE 2
 #define VRING_USED_ALIGN_SIZE 4
 #define VRING_DESC_ALIGN_SIZE 16
@@ -145,6 +151,7 @@ typedef struct vring_avail __attribute__((aligned(VRING_AVAIL_ALIGN_SIZE)))
     vring_avail_t;
 typedef struct vring_used __attribute__((aligned(VRING_USED_ALIGN_SIZE)))
     vring_used_t;
+~~~
 通过 typedef + aligned 属性强制统一对齐方式，具体机制如下。
 
 ​为何使用 typedef 而非直接修饰结构体？
@@ -172,6 +179,7 @@ struct vring {
 	• ​保留布局稳定性：不改变原结构体内存布局（不用 packed），仅调整对齐，兼容性更佳。
 
 ### 1.3.2 vring_desc, vring_avail, vring_used
+~~~cpp
 1）vring_desc
 struct vring_desc {
     __virtio64 addr;// guest的物理地址
@@ -179,7 +187,7 @@ struct vring_desc {
     __virtio16 flags;
     __virtio16 next;// 下一个未被使用的desc的索引
 };
-
+~~~
 2）vring_avail
 对设备来讲的可用。
 驱动将请求放在vring_avail中！！！
@@ -196,6 +204,7 @@ struct vring_avail {
 3）vring_used
 设备通过 vring_used ​生产结果。驱动通过 vring_used ​消费结果
 设备已经将数据放到了这里面，也就是通知驱动来处理后续。
+~~~cpp
 struct vring_used_elem {
     __virtio32 id; // desc的索引
     /* Total length of the descriptor chain which was used (written to) */
@@ -209,7 +218,7 @@ struct vring_used {
     __virtio16 idx;// 设备维护的，表示下一个要写入的vring_used.ring[]的位置，循环递增的
     vring_used_elem_t ring[];// 0 长数组，表示vring_desc中的已处理的的desc的索引
 };
-
+~~~
 综上，vring的数据结构可以参考下图的结构：
 
 
@@ -224,6 +233,7 @@ struct vring_used {
 根据设备是否支持VIRTIO_F_RING_PACKED，来创建split或者是packed的virtqueue。
 Packed virqueue是virtio1.1之后引入的，是一中性能更好的实现。
 而Split的优势是兼容性好，能支持所有的传统设备。
+~~~cpp
 struct virtqueue *vring_create_virtqueue(
     unsigned int index,
     unsigned int num,
@@ -244,8 +254,9 @@ struct virtqueue *vring_create_virtqueue(
             vdev, weak_barriers, may_reduce_num,
             context, notify, callback, name);
 }
-
+~~~
 ## 2.1 vring_create_virtqueue_split
+~~~cpp
 static struct virtqueue *vring_create_virtqueue_split(
     unsigned int index,
     unsigned int num,
@@ -311,15 +322,16 @@ static struct virtqueue *vring_create_virtqueue_split(
           //  
     return vq;
 }
-
+~~~
 ### 2.2.1 vring_size(num, vring_align)
-
+~~~cpp
 static __inline__ unsigned vring_size(unsigned int num, unsigned long align)
 {
     return ((sizeof(struct vring_desc) * num + sizeof(__virtio16) * (3 + num)
          + align - 1) & ~(align - 1))
         + sizeof(__virtio16) * 3 + sizeof(struct vring_used_elem) * num;
 }
+~~~
 分为两部分：
 	• sizeof(struct vring_desc) * num：描述符表的大小，即vring_desc数组的大小
 	• sizeof(__virtio16) * (3 + num) ：可用环大小，因为vring_avail中有个0长数组，所以按num分配
@@ -334,6 +346,7 @@ static __inline__ unsigned vring_size(unsigned int num, unsigned long align)
 p是上面分配好的空间的首地址。
 通过这个函数，将p指向的空间，分为vring_desc数组+vring_avail+vring_used.
 并将这块空间的三个相应的地址，赋给vring的成员变量。
+~~~cpp
 static __inline__ void vring_init(struct vring *vr, unsigned int num, void *p,
                   unsigned long align)
 {
@@ -343,12 +356,13 @@ static __inline__ void vring_init(struct vring *vr, unsigned int num, void *p,
     vr->used = (void *)(((uintptr_t)&vr->avail->ring[num] + sizeof(__virtio16)
         + align-1) & ~(align - 1));
 }
-
+~~~
 
 
 ### 2.2.3 __vring_new_virtqueue
 也就是创建一个新的vring_virtqueue，并将上面创建好的vring赋给其相关的成员变量。
 返回将创建好的vring_virtqueue, 但是是以virtqueue的形式返回的，都一样。基类子类的问题而已。
+~~~cpp
 /* Only available for split ring */
 struct virtqueue *__vring_new_virtqueue(unsigned int index,
                     struct vring vring,
@@ -423,7 +437,7 @@ struct virtqueue *__vring_new_virtqueue(unsigned int index,
     return &vq->vq;
 }
 EXPORT_SYMBOL_GPL(__vring_new_virtqueue);
-
+~~~
 ## 2.2 vring_create_virtqueue_packed
 packed类型的传输，放在以后整理。
 
@@ -437,6 +451,7 @@ packed类型的传输，放在以后整理。
 	• virtqueue_add_inbuf_ctx
 
 定义：
+
 static inline int virtqueue_add(struct virtqueue *_vq,
                 struct scatterlist *sgs[],
                 unsigned int total_sg,
@@ -452,7 +467,9 @@ static inline int virtqueue_add(struct virtqueue *_vq,
                  virtqueue_add_split(_vq, sgs, total_sg,
                     out_sgs, in_sgs, data, ctx, gfp);
 }
+
 只看split风格的传输类型。
+~~~cpp
 static inline int virtqueue_add_split(struct virtqueue *_vq,
                       struct scatterlist *sgs[], // sg[i]是一个链表
                       unsigned int total_sg,
@@ -623,6 +640,7 @@ unmap_release:
     END_USE(vq);
     return -EIO;
 }
+~~~
 
 需要注意的下面几点：
 	• 传入参数struct scatterlist *sgs[]是一个数组链表，每一个数组元素指向一个struct scatterlist链表。这个链表描述一段物理上不连续但逻辑上连续的内存区域。也就是传入参数是多段物理上不连续但逻辑上连续的内存区域。这多段信息，看成是一条消息。
@@ -635,6 +653,7 @@ unmap_release:
 主要就是计算出total_sg，然后调用virtqueue_add。
 total_sg就是scatterlist *sgs[]代表的信息，所有物理块数量，也就是将会占用的vring的desc的数量。
 也就是这条信息的所有物理块数量。
+~~~cpp
 int virtqueue_add_sgs(struct virtqueue *_vq,
               struct scatterlist *sgs[],
               unsigned int out_sgs,
@@ -651,7 +670,7 @@ int virtqueue_add_sgs(struct virtqueue *_vq,
     }
     return virtqueue_add(_vq, sgs, total_sg, out_sgs, in_sgs, data, NULL, gfp);
 }
-
+~~~
 ## 3.2 virtqueue_add_outbuf
 只向virtqueue中添加outbuf，也就是inbuf是0。以此参数来调用virtqueue_add。
 传入参数是一条scatterlist链表，这符合逻辑。
@@ -782,6 +801,7 @@ static __inline__ int vring_need_event(__u16 event_idx, __u16 new_idx, __u16 old
 
 
 ## 4.2 virtqueue_notify
+~~~cpp
 bool virtqueue_notify(struct virtqueue *_vq)
 {
     struct vring_virtqueue *vq = to_vvq(_vq);
@@ -794,6 +814,7 @@ bool virtqueue_notify(struct virtqueue *_vq)
     }
     return true;
 }
+~~~
 最终是调用了virtqueue的notify函数。
 virtqueue的notify函数，是在创建virtqueue的时候，也就是在上面分析的__vring_new_virtqueue函数中注册的。
 不同的virtqueue的创建方式，会决定不同的notify方式，这也就是必须使用回调的原因。（根据调用者的不同，有不同的实现方式）。
@@ -831,6 +852,7 @@ void *virtqueue_get_buf_ctx(struct virtqueue *_vq, unsigned int *len,
 
 
 最终调用的函数是virtqueue_get_buf_ctx_split：
+~~~cpp
 static void *virtqueue_get_buf_ctx_split(struct virtqueue *_vq,
                      unsigned int *len,
                      void **ctx)
@@ -894,10 +916,12 @@ static void *virtqueue_get_buf_ctx_split(struct virtqueue *_vq,
     END_USE(vq);
     return ret;
 }
+~~~
 需要注意的是，这个函数一次只能处理一个设备请求（last_used_idx递增一次），并没有全部处理完vring_used.vring[]中的全部请求。
 要想批量实现处理，就要循环调用这个函数，当more_used_split失败时，就代表处理完了所有的请求。
 
 ## 5.1 more_used_split
+
 static inline bool more_used_split(const struct vring_virtqueue *vq)
 {
         //  last_used_idx是驱动维护的，初始值是0，记录当前要处理的最后一个vring_used->ring的索引位置
