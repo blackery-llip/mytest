@@ -451,7 +451,7 @@ packed类型的传输，放在以后整理。
 	• virtqueue_add_inbuf_ctx
 
 定义：
-
+~~~cpp
 static inline int virtqueue_add(struct virtqueue *_vq,
                 struct scatterlist *sgs[],
                 unsigned int total_sg,
@@ -467,6 +467,7 @@ static inline int virtqueue_add(struct virtqueue *_vq,
                  virtqueue_add_split(_vq, sgs, total_sg,
                     out_sgs, in_sgs, data, ctx, gfp);
 }
+~~~
 
 只看split风格的传输类型。
 ~~~cpp
@@ -674,6 +675,7 @@ int virtqueue_add_sgs(struct virtqueue *_vq,
 ## 3.2 virtqueue_add_outbuf
 只向virtqueue中添加outbuf，也就是inbuf是0。以此参数来调用virtqueue_add。
 传入参数是一条scatterlist链表，这符合逻辑。
+~~~cpp
 int virtqueue_add_outbuf(struct virtqueue *vq,
              struct scatterlist *sg, unsigned int num,
              void *data,
@@ -681,9 +683,11 @@ int virtqueue_add_outbuf(struct virtqueue *vq,
 {
     return virtqueue_add(vq, &sg, num, 1, 0, data, NULL, gfp);
 }
+~~~
 
 ## 3.3 virtqueue_add_inbuf
 与virtqueue_add_outbuf同理。
+~~~cpp
 int virtqueue_add_inbuf(struct virtqueue *vq,
             struct scatterlist *sg, unsigned int num,
             void *data,
@@ -691,11 +695,12 @@ int virtqueue_add_inbuf(struct virtqueue *vq,
 {
     return virtqueue_add(vq, &sg, num, 0, 1, data, NULL, gfp);
 }
-
+~~~
 
 # 4 virtqueue_kick
 这也是向驱动暴露的一个接口。用于通知设备。
 更新可用环索引并通知设备有新请求可处理。
+~~~cpp
 bool virtqueue_kick(struct virtqueue *vq)
 {
     if (virtqueue_kick_prepare(vq))
@@ -709,7 +714,7 @@ bool virtqueue_kick_prepare(struct virtqueue *_vq)
     return vq->packed_ring ? virtqueue_kick_prepare_packed(_vq) :
                  virtqueue_kick_prepare_split(_vq);
 }
-
+~~~
 
 所以主要是两个重要函数：
 	• virtqueue_kick_prepare_split
@@ -718,7 +723,7 @@ bool virtqueue_kick_prepare(struct virtqueue *_vq)
 ## 4.1 virtqueue_kick_prepare_split
 
 用于判断是否需要通知设备。
-
+~~~cpp
 static bool virtqueue_kick_prepare_split(struct virtqueue *_vq)
 {
     struct vring_virtqueue *vq = to_vvq(_vq);
@@ -749,6 +754,7 @@ static bool virtqueue_kick_prepare_split(struct virtqueue *_vq)
     END_USE(vq);
     return needs_kick;
 }
+~~~
 
 1）vring_avail_event和vring_used_event
 这两个宏需要注意，用于访问vring的事件索引​（Event Index）。
@@ -761,6 +767,7 @@ static bool virtqueue_kick_prepare_split(struct virtqueue *_vq)
 
 
 也就是说，在我们上面vring中的vring_avail的定义应修改为：
+~~~cpp
 struct vring_avail {
     __virtio16 flags;
     __virtio16 idx;  // 下一个可用槽位的索引（驱动维护）
@@ -774,7 +781,7 @@ struct vring_used {
     vring_used_elem_t ring[];// 0 长数组，表示vring_desc中的已用的desc的索引
        __virtio16 avail_event_idx; // 支持事件索引机制
 };
-
+~~~
 
 所以vring_used_event的作用为：
 	• 从 ​可vring_avail的末尾 获取 ​Used Event Index​（设备期望驱动通知的索引）。
@@ -836,6 +843,7 @@ static bool vm_notify(struct virtqueue *vq)
 
 # 5 virtqueue_get_buf
 
+~~~cpp
 void *virtqueue_get_buf(struct virtqueue *_vq, unsigned int *len)
 {
     return virtqueue_get_buf_ctx(_vq, len, NULL);
@@ -849,7 +857,7 @@ void *virtqueue_get_buf_ctx(struct virtqueue *_vq, unsigned int *len,
     return vq->packed_ring ? virtqueue_get_buf_ctx_packed(_vq, len, ctx) :
                  virtqueue_get_buf_ctx_split(_vq, len, ctx);
 }
-
+~~~
 
 最终调用的函数是virtqueue_get_buf_ctx_split：
 ~~~cpp
@@ -936,6 +944,7 @@ static inline bool more_used_split(const struct vring_virtqueue *vq)
 
 
 回顾vring中的vring_used:
+~~~cpp
 struct vring_used_elem {
     __virtio32 id; // desc的索引
     /* Total length of the descriptor chain which was used (written to) */
@@ -949,6 +958,7 @@ struct vring_used {
     __virtio16 idx;// 设备维护的，表示下一个要写入的vring_used.ring[]的位置，循环递增的
     vring_used_elem_t ring[];// 0 长数组，表示vring_desc中的已处理的的desc的索引
 };
+~~~
 当驱动提交请求的时候，会构建desc链，更新vring的Avail Ring，调用vritqueue_kick通知设备。
 设备读取avail ring，处理请求然后写入used ring，也就是更新vring_used中的idx和ring[]。
 
