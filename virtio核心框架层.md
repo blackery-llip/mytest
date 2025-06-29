@@ -1,4 +1,5 @@
 # 1 virtio device与virtio_mmio_device定义
+~~~cpp
 struct virtio_device {
     int index;
     bool failed;
@@ -22,6 +23,7 @@ struct virtio_mmio_device {
     spinlock_t lock;
     struct list_head virtqueues;
 };
+~~~
 两个数据结构中都有一个virtqueue的链表。
 理解这两条数组的初始化时时这篇文章的关键。
 
