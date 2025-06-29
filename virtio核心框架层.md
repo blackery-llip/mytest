@@ -44,6 +44,7 @@ virtio.c主要是定义一个virtio bus，并定义相关的probe函数和match�
 
 ## 3.1 框架
 这个文件最终编出一个kernel module，下面是入口和出口函数：
+~~~cpp
 static int virtio_init(void)
 {
     if (bus_register(&virtio_bus) != 0)
@@ -58,6 +59,7 @@ static void __exit virtio_exit(void)
 core_initcall(virtio_init);
 module_exit(virtio_exit);
 MODULE_LICENSE("GPL");
+~~~
 在 Linux 内核中，bus_register() 是设备驱动模型（Device Driver Model）的核心函数之一，用于向内核注册一个新的总线类型（如 PCI、USB、virtio 等）。不做详细分析，只列出最主要的作用：
 	• 初始化总线的 sysfs 接口：在 /sys/bus/ 下创建总线的目录（如 /sys/bus/virtio）。
 	• ​注册总线属性​（如 drivers_autoprobe、drivers_probe 等）。
@@ -65,6 +67,7 @@ MODULE_LICENSE("GPL");
 	• ​将总线加入全局总线列表：使后续设备和驱动能够通过该总线进行注册。
 
 ## 3.2 virtio_bus
+~~~cpp
 static struct bus_type virtio_bus = {
     .name  = "virtio",
     .match = virtio_dev_match,
@@ -73,7 +76,7 @@ static struct bus_type virtio_bus = {
     .probe = virtio_dev_probe,
     .remove = virtio_dev_remove,
 };
-
+~~~
 当设备或驱动注册到该总线时，内核会调用virtio_dev_match 检查二者是否兼容。
 当设备与驱动匹配成功后，调用如virtio_dev_probe初始化设备。
 
@@ -83,6 +86,7 @@ static struct bus_type virtio_bus = {
 	• 有新的设备添加到bus，也就是register_virtio_device被调用（一般是在virtio_mmio中被调用）。会对每个驱动调用这个函数。
 	• 有新的驱动添加到bus，也就是register_virtio_driver被调用。（一般是在virtio-console等驱动中被调用）。这时会对每个设备调用这个函数。
 
+~~~cpp
 static int virtio_dev_match(struct device *_dv, struct device_driver *_dr)
 {
     unsigned int i;
@@ -110,7 +114,7 @@ struct virtio_device_id {
     __u32 device;  // 设备类型标识（如网络、块设备）----由virtio规范确定，完整列表在virtio_ids.h
     __u32 vendor;  // 厂商标识（如 QEMU、特定硬件厂商）
 };
-
+~~~
 
 
 match机制很简单，就是对driver中的virtio_device_id做遍历，检查是否与device中的id.device和id.vendor相匹配。
